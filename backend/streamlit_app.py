@@ -67,7 +67,24 @@ if mode != "Login only":
         )
         sections_param = ",".join(chosen)
     shorter = st.checkbox("Shorter (skip nested goal detail: Objectives/Interventions/Baseline/Progress)")
-    department = st.text_input("Department (optional, exact label)", value="")
+    # A dropdown rather than free text: the labels must match exactly, and
+    # the account's own default drifts to whichever session logged in last
+    # — so leaving it unset makes results depend on history. Defaulting to
+    # a real department keeps runs reproducible.
+    DEPARTMENTS = [
+        "SH OH - Shaker",
+        "SH OH - North Canton",
+        "SH OH - West Cleveland",
+        "SH TN - Patterson",
+        "IPC TN - Ascension St. Thomas Midtown",
+        "IPC TN - Ascension St. Thomas River Park",
+        "IPC TN - Ascension St. Thomas West",
+        "IPC TN - HCA Centennial",
+        "(whatever the account last used)",
+    ]
+    department = st.selectbox("Department", DEPARTMENTS, index=0)
+    if department.startswith("("):
+        department = ""
 
 run = st.button("Run Test", type="primary")
 
