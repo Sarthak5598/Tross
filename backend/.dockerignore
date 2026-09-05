@@ -1,0 +1,10 @@
+.env
+venv/
+.venv/
+__pycache__/
+*.pyc
+*.log
+debug_*
+streamlit_app.py
+requirements.txt
+TROUBLESHOOTING.md

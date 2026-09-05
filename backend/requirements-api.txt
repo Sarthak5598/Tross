@@ -1,0 +1,9 @@
+# API-only dependencies for the deployed image. Deliberately excludes
+# streamlit/requests — the dashboard is a separate client that talks to
+# this over HTTP and has no business being installed on the server.
+# Use requirements.txt for local development (it includes both).
+fastapi==0.115.0
+uvicorn==0.30.6
+playwright==1.62.0
+python-dotenv==1.0.1
+pyotp==2.9.0
