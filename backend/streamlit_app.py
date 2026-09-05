@@ -5,14 +5,41 @@ from datetime import datetime
 import requests
 import streamlit as st
 
-# Point the dashboard at a deployed backend without editing code:
-#   TROSS_API_BASE=http://<host>:8000 streamlit run streamlit_app.py
-# Defaults to a local server so nothing changes for local development.
-API_BASE = os.environ.get("TROSS_API_BASE", "http://127.0.0.1:8010").rstrip("/")
+# Defaults to the deployed EC2 instance. Override for local work:
+#   TROSS_API_BASE=http://127.0.0.1:8010 streamlit run streamlit_app.py
+# Note the deployed IP is auto-assigned and changes if the instance is
+# stopped and started — attach an Elastic IP to make it stable.
+DEFAULT_API_BASE = "http://52.91.250.2:8000"
+API_BASE = os.environ.get("TROSS_API_BASE", DEFAULT_API_BASE).rstrip("/")
 
 st.set_page_config(page_title="Tross-trail — Live Test", page_icon="🔑", layout="wide")
 st.markdown("### 🔑 Tross-trail — Live Test")
 st.caption("Runs the athenahealth sandbox flow (login + TOTP, patient search, care plan) and streams the browser live.")
+
+
+def _backend_status() -> tuple[str, str]:
+    """Ping /health so it's obvious at a glance which backend this is
+    talking to and whether it's up — otherwise a wrong/missing API_BASE
+    only shows up as a confusing failure after you click Run."""
+    try:
+        r = requests.get(f"{API_BASE}/health", timeout=4)
+        if r.status_code != 200:
+            return "error", f"HTTP {r.status_code}"
+        active = r.json().get("activeJobId")
+        return ("busy", f"job {active[:8]}… running") if active else ("ok", "idle")
+    except Exception as exc:
+        return "error", type(exc).__name__
+
+
+_state, _detail = _backend_status()
+_icon = {"ok": "🟢", "busy": "🟡", "error": "🔴"}[_state]
+st.caption(f"{_icon} Backend: `{API_BASE}` — {_detail}")
+if _state == "error":
+    st.error(
+        f"Can't reach the backend at {API_BASE}. Check the instance is running and that "
+        f"its public IP hasn't changed (it's reassigned on stop/start), or set "
+        f"TROSS_API_BASE to a different host."
+    )
 
 MODES = ["Login only", "Patient lookup"]
 mode = st.radio("Mode", MODES, horizontal=True)
