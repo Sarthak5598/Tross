@@ -12,6 +12,32 @@ That rules out **Lambda**, **App Runner**, and any autoscaling group with
 more than one instance. A single EC2 instance running Docker is the right
 shape, and `--workers 1` in the Dockerfile is load-bearing — don't raise it.
 
+## Free-tier path (t3.micro) — start here if cost matters
+
+AWS free tier gives a `t2.micro`/`t3.micro` with **1GB RAM**, free for 12
+months on accounts under a year old. That is tight for Chromium, but
+workable *because this app runs one browser tab at a time* (the single-job
+lock): roughly ~1.2GB of demand against 1GB, so a swap file absorbs the
+difference. Expect somewhat slower page loads, not failure.
+
+Do everything below as normal, with two changes:
+
+- Pick the instance type marked **Free tier eligible** (`t2.micro` or
+  `t3.micro`, varies by region) instead of `t3.medium`.
+- **Add swap before building** — the Docker build itself (Chromium +
+  system deps) will struggle on 1GB without it:
+
+  ```bash
+  sudo fallocate -l 4G /swapfile && sudo chmod 600 /swapfile
+  sudo mkswap /swapfile && sudo swapon /swapfile
+  echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+  free -h   # confirm swap shows 4Gi
+  ```
+
+If you see the container die mid-request, or `dmesg | grep -i oom` shows
+kills, that's the 1GB ceiling — stop the instance, change the type to
+`t3.small`, start it again. Nothing else needs to change.
+
 ## 1. Launch the instance
 
 - **Region:** any US region (`us-east-1` is cheapest). Hosting in the US

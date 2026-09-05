@@ -65,15 +65,29 @@ async def open_care_management_pane(page, on_step) -> None:
     # patient_search._wait_for_frame's docstring for why this matters.
     frame = await _wait_for_frame(page, PATIENT_FRAME_NAME, NAV_TIMEOUT_MS)
 
-    # This link is only rendered when the patient actually has a Treatment
-    # Plan in the *currently active department*. When they don't, the click
-    # just times out, which used to surface as a bare
-    # "Locator.click: Timeout 30000ms exceeded" with no hint about the real
-    # cause. Name the likely reason, and the department, in the error.
+    # Two distinct failure modes here, and they need different messages:
+    #
+    #  (a) The link isn't rendered at all — the patient has no Treatment
+    #      Plan in the *currently active department*. Then the locator
+    #      never resolves.
+    #  (b) The link resolves and passes every actionability check, but the
+    #      click itself never lands. Seen for real on a small EC2 instance:
+    #      Playwright logged "element is visible, enabled and stable /
+    #      done scrolling" and then timed out anyway — something intercepts
+    #      the pointer, or the retry loop is just too slow on a starved
+    #      CPU. Blaming the department there (as this used to) sends you
+    #      down completely the wrong path.
+    #
+    # For (b), fall back to dispatching the click via JS, which bypasses
+    # both interception and the actionability re-checks. That's normally a
+    # thing to avoid — it can "click" something invisible — but here we've
+    # already confirmed the element resolved and was visible and stable,
+    # so the risk that we're hitting the wrong thing is minimal.
     from automation import browser_pool
 
+    link = frame.get_by_text(TREATMENT_PLAN_LINK_TEXT)
     try:
-        await frame.get_by_text(TREATMENT_PLAN_LINK_TEXT).click(timeout=NAV_TIMEOUT_MS)
+        await link.wait_for(state="visible", timeout=NAV_TIMEOUT_MS)
     except Exception as exc:
         department = browser_pool.current_department() or "unknown"
         raise RuntimeError(
@@ -82,7 +96,14 @@ async def open_care_management_pane(page, on_step) -> None:
             f"Treatment Plan in the active department ({department!r}) — try passing an "
             f"explicit `department`. Underlying error: {exc}"
         ) from exc
-    await on_step("Clicked 'Go to Treatment Plan'")
+
+    try:
+        await link.click(timeout=NAV_TIMEOUT_MS)
+        await on_step("Clicked 'Go to Treatment Plan'")
+    except Exception as exc:
+        await on_step(f"Normal click failed ({type(exc).__name__}), retrying via JS dispatch")
+        await link.evaluate("el => el.click()")
+        await on_step("Clicked 'Go to Treatment Plan' (JS fallback)")
 
     # Shadow root content loads async and this widget is heavy — confirmed
     # via screenshot that the pane opens immediately but shows a loading
