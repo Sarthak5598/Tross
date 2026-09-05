@@ -5,21 +5,29 @@ from datetime import datetime
 import requests
 import streamlit as st
 
-# Defaults to the deployed EC2 instance. Override for local work:
-#   TROSS_API_BASE=http://127.0.0.1:8010 streamlit run streamlit_app.py
-# Note the deployed IP is auto-assigned and changes if the instance is
-# stopped and started — attach an Elastic IP to make it stable.
-DEFAULT_API_BASE = "http://52.91.250.2:8000"
-API_BASE = os.environ.get("TROSS_API_BASE", DEFAULT_API_BASE).rstrip("/")
+# Local by default. The backend is editable in the UI below rather than
+# hardcoded, because which one you want changes constantly — local while
+# developing, the deployed instance while demoing — and the deployed IP is
+# auto-assigned, so it moves whenever the instance is stopped and started.
+LOCAL_API_BASE = "http://127.0.0.1:8010"
+DEPLOYED_API_BASE = "http://52.91.250.2:8000"
 
 st.set_page_config(page_title="Tross-trail — Live Test", page_icon="🔑", layout="wide")
 st.markdown("### 🔑 Tross-trail — Live Test")
 st.caption("Runs the athenahealth sandbox flow (login + TOTP, patient search, care plan) and streams the browser live.")
 
+_base_col, _status_col = st.columns([3, 2])
+with _base_col:
+    API_BASE = st.text_input(
+        "Backend",
+        value=os.environ.get("TROSS_API_BASE", LOCAL_API_BASE),
+        help=f"Local: {LOCAL_API_BASE} · Deployed: {DEPLOYED_API_BASE}",
+    ).rstrip("/")
+
 
 def _backend_status() -> tuple[str, str]:
     """Ping /health so it's obvious at a glance which backend this is
-    talking to and whether it's up — otherwise a wrong/missing API_BASE
+    talking to and whether it's up — otherwise pointing at the wrong one
     only shows up as a confusing failure after you click Run."""
     try:
         r = requests.get(f"{API_BASE}/health", timeout=4)
@@ -32,13 +40,15 @@ def _backend_status() -> tuple[str, str]:
 
 
 _state, _detail = _backend_status()
-_icon = {"ok": "🟢", "busy": "🟡", "error": "🔴"}[_state]
-st.caption(f"{_icon} Backend: `{API_BASE}` — {_detail}")
+with _status_col:
+    _icon = {"ok": "🟢", "busy": "🟡", "error": "🔴"}[_state]
+    st.markdown(f"<div style='padding-top:2rem'>{_icon} {_detail}</div>", unsafe_allow_html=True)
+
 if _state == "error":
     st.error(
-        f"Can't reach the backend at {API_BASE}. Check the instance is running and that "
-        f"its public IP hasn't changed (it's reassigned on stop/start), or set "
-        f"TROSS_API_BASE to a different host."
+        f"Can't reach a backend at {API_BASE}. If you meant to run locally, start it with "
+        f"`uvicorn main:app --port 8010`. If you meant the deployed one, check the instance "
+        f"is running and that its public IP hasn't changed — it's reassigned on stop/start."
     )
 
 MODES = ["Login only", "Patient lookup"]
