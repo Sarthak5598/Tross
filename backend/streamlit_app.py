@@ -14,7 +14,9 @@ DEPLOYED_API_BASE = "http://52.91.250.2:8000"
 
 st.set_page_config(page_title="Tross-trail — Live Test", page_icon="🔑", layout="wide")
 st.markdown("### 🔑 Tross-trail — Live Test")
-st.caption("Runs the athenahealth sandbox flow (login + TOTP, patient search, care plan) and streams the browser live.")
+st.caption("Reads Treatment Plan data from athenahealth's Care Management API. "
+           "A browser logs in once at startup to supply the session token; "
+           "requests themselves are plain HTTP and run concurrently.")
 
 _base_col, _status_col = st.columns([3, 2])
 with _base_col:
@@ -51,82 +53,51 @@ if _state == "error":
         f"is running and that its public IP hasn't changed — it's reassigned on stop/start."
     )
 
-MODES = ["Login only", "Patient lookup"]
-mode = st.radio("Mode", MODES, horizontal=True)
-live_view = st.checkbox(
-    "Live view (screenshots)",
-    value=True,
-    help="Off = no per-step screenshots captured at all — use this to time the API without that overhead.",
-)
-patient_id = None
 sections_param = None
 department = None
-shorter = False
-if mode != "Login only":
-    patient_id = st.text_input("Patient ID", value="1133")
-    sections_mode = st.radio(
-        "Sections", ["All (default)", "Patient-found confirmation only", "Custom"], horizontal=True
+include_history = False
+patient_id = st.text_input("Patient ID", value="1133")
+sections_mode = st.radio(
+    "Sections", ["All (default)", "Patient-found confirmation only", "Custom"], horizontal=True
+)
+if sections_mode == "All (default)":
+    sections_param = None
+elif sections_mode == "Patient-found confirmation only":
+    sections_param = ""
+else:
+    chosen = st.multiselect(
+        "Pick sections", ["summary", "attestations", "concerns", "goals", "characteristics"]
     )
-    if sections_mode == "All (default)":
-        sections_param = None
-    elif sections_mode == "Patient-found confirmation only":
-        sections_param = ""
-    else:
-        chosen = st.multiselect(
-            "Pick sections", ["summary", "attestations", "concerns", "goals", "characteristics"]
-        )
-        sections_param = ",".join(chosen)
-    shorter = st.checkbox("Shorter (skip nested goal detail: Objectives/Interventions/Baseline/Progress)")
-    # A dropdown rather than free text: the labels must match exactly, and
-    # the account's own default drifts to whichever session logged in last
-    # — so leaving it unset makes results depend on history. Defaulting to
-    # a real department keeps runs reproducible.
-    DEPARTMENTS = [
-        "SH OH - Shaker",
-        "SH OH - North Canton",
-        "SH OH - West Cleveland",
-        "SH TN - Patterson",
-        "IPC TN - Ascension St. Thomas Midtown",
-        "IPC TN - Ascension St. Thomas River Park",
-        "IPC TN - Ascension St. Thomas West",
-        "IPC TN - HCA Centennial",
-        "(whatever the account last used)",
-    ]
-    department = st.selectbox("Department", DEPARTMENTS, index=0)
-    if department.startswith("("):
-        department = ""
+    sections_param = ",".join(chosen)
+include_history = st.checkbox(
+    "Include goal progress history (slower: one extra call per goal)")
+# A dropdown rather than free text, defaulting to a real department so
+# runs stay reproducible. Shows the human label but sends the stable
+# code — a label rename upstream then costs one line here instead of
+# breaking every saved request.
+from automation.departments import Department
+_choice = st.selectbox("Department", list(Department),
+                       format_func=lambda d: f"{d.label}  ({d.value})",
+                       index=1)
+department = _choice.value
 
 run = st.button("Run Test", type="primary")
 
-live_col, steps_col = st.columns([1, 1])
-with live_col:
-    st.caption("Live Browser View")
-    frame_box = st.empty()
-    frame_box.markdown(
-        "<div style='background:#0f1720;border:1px solid #223140;border-radius:8px;"
-        "height:280px;display:flex;align-items:center;justify-content:center;color:#5b6b78;font-size:12px;'>"
-        "No automation running</div>",
-        unsafe_allow_html=True,
-    )
-with steps_col:
-    st.caption("Step Log")
-    steps_box = st.empty()
+st.caption("Step Log")
+steps_box = st.empty()
 
 result_box = st.empty()
 data_box = st.empty()
 
 
 def poll_job(job_id: str) -> None:
-    # A wall-clock deadline, not an iteration count — the full care-plan
-    # flow has legitimately taken anywhere from ~40s to several minutes
-    # across real runs (department-step and pane-load timing both vary a
-    # lot), so a fixed iteration count either times out too early or wastes
-    # time on faster runs. The backend job itself runs independently as a
-    # FastAPI BackgroundTask — if this UI-side poll gives up, the job may
-    # still complete; that's why we show the job_id on timeout below.
-    deadline = time.monotonic() + 360  # 6 minutes
+    # A wall-clock deadline rather than an iteration count. Runs are now
+    # ~8.5s (or ~12s with history), but this stays generous: the backend
+    # job runs independently as a FastAPI BackgroundTask, so if this
+    # UI-side poll gives up the job may still finish — which is why the
+    # job_id is shown on timeout below.
+    deadline = time.monotonic() + 120
     seen = 0
-    last_frame = -1
 
     while time.monotonic() < deadline:
         job = requests.get(f"{API_BASE}/api/jobs/{job_id}", timeout=5).json()
@@ -134,16 +105,6 @@ def poll_job(job_id: str) -> None:
         if len(steps) > seen:
             steps_box.markdown("\n".join(f"- {s}" for s in steps))
             seen = len(steps)
-
-        frames_info = requests.get(f"{API_BASE}/api/jobs/{job_id}/frames", timeout=5).json()
-        frame_count = frames_info["count"]
-        if frame_count - 1 > last_frame:
-            last_frame = frame_count - 1
-            frame_img = requests.get(
-                f"{API_BASE}/api/jobs/{job_id}/frames/{last_frame}", timeout=5
-            ).content
-            frame_box.image(frame_img, caption=f"Live browser — step {last_frame + 1}", use_column_width=True)
-            time.sleep(0.4)
 
         if job["status"] in ("done", "failed"):
             elapsed_str = ""
@@ -178,15 +139,12 @@ with check_col2:
 
 
 if run:
-    if mode == "Login only":
-        submit = requests.post(f"{API_BASE}/api/login-test", params={"live": live_view}, timeout=10)
-    else:
-        params = {"patient_id": patient_id, "shorter": shorter, "live": live_view}
-        if sections_param is not None:
-            params["sections"] = sections_param
-        if department:
-            params["department"] = department
-        submit = requests.post(f"{API_BASE}/api/patient", params=params, timeout=10)
+    params = {"patient_id": patient_id, "include_history": include_history}
+    if sections_param is not None:
+        params["sections"] = sections_param
+    if department:
+        params["department"] = department
+    submit = requests.post(f"{API_BASE}/api/patient", params=params, timeout=10)
 
     if submit.status_code != 200:
         st.error(f"Error starting job: {submit.status_code} {submit.text}")

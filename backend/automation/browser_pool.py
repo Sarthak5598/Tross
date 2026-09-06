@@ -14,7 +14,11 @@ import os
 from playwright.async_api import async_playwright
 
 import config
-from automation.login import select_department
+from automation.login import (
+    select_department,
+    GLOBAL_NAV_FRAME_SELECTOR,
+    SEARCH_INPUT_SELECTOR,
+)
 
 _playwright = None
 _browser = None
@@ -42,7 +46,19 @@ APP_SHELL_READY_CHECK = "() => !!(window.AH && AH.Frames.Top.Frame().navsearchob
 # default on the page makes the implicit case consistent with the rest;
 # calls that genuinely need longer (the heavy pane load) still pass their
 # own explicit timeout, which overrides this.
-DEFAULT_ACTION_TIMEOUT_MS = 20_000
+#
+# 30s, not less. This was briefly set to 20s to make the implicit case
+# consistent with our explicit 15s waits — a mistake. The login page alone
+# routinely takes 12-13s to render, so 20s left almost no margin and
+# produced "Page.fill: Timeout 20000ms exceeded ... waiting for
+# #athena-username" on slower starts. Anywhere we genuinely want to fail
+# fast passes its own shorter timeout; this ceiling only exists to stop a
+# call hanging indefinitely.
+DEFAULT_ACTION_TIMEOUT_MS = 30_000
+
+# How long to give the search box to prove the reused session is actually
+# usable. Deliberately short — see is_logged_in().
+SESSION_USABLE_TIMEOUT_MS = 4_000
 
 
 def _launch_args() -> list[str]:
@@ -128,13 +144,36 @@ async def reset_page() -> None:
 
 
 async def is_logged_in(page) -> bool:
-    """Same readiness check login.py uses to confirm the app shell loaded.
-    Also doubles as a liveness check: throws/returns False if the session
-    expired, the page navigated away, or otherwise isn't in a usable state
-    — any of which should trigger a fresh login rather than reusing a
-    broken page."""
+    """Whether the persistent session can actually be reused.
+
+    Two checks, because the JS one alone is not enough. `navsearchobject`
+    existing means the shell's script loaded at some point — it does NOT
+    mean the UI is currently usable. A previous run can leave the shell in
+    a state where that object is still present but the nav isn't rendered,
+    and we'd happily "reuse" it and then fail ~20s later with
+    "#searchinput ... element is not visible". That was a real, recurring
+    random failure.
+
+    So we also confirm the search box is actually visible. If it isn't,
+    the session is stale: report not-logged-in and let the caller do a
+    fresh login rather than driving a broken page.
+    """
     try:
-        return bool(await page.evaluate(APP_SHELL_READY_CHECK))
+        if not bool(await page.evaluate(APP_SHELL_READY_CHECK)):
+            return False
+    except Exception:
+        return False
+
+    try:
+        # Short timeout on purpose: a healthy shell has this on screen
+        # immediately. Waiting longer just delays the re-login we already
+        # know we need.
+        await (
+            page.frame_locator(GLOBAL_NAV_FRAME_SELECTOR)
+            .locator(SEARCH_INPUT_SELECTOR)
+            .wait_for(state="visible", timeout=SESSION_USABLE_TIMEOUT_MS)
+        )
+        return True
     except Exception:
         return False
 

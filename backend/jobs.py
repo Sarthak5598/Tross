@@ -1,5 +1,9 @@
-"""In-memory job tracking, one dict per job_id. No DB yet — this is just
-for watching a single login run at a time during development.
+"""In-memory job tracking, one dict per job_id, plus the short
+idempotency window. No DB yet.
+
+Jobs run concurrently: there is no single-job lock any more. That lock
+existed only because the old DOM path shared one browser page — with all
+data coming from HTTP calls, nothing contends.
 """
 
 import time
@@ -8,48 +12,29 @@ from datetime import datetime, timezone
 _jobs: dict[str, dict] = {}
 _start_times: dict[str, float] = {}
 
-# Only one browser automation job should run at a time — the athenahealth
-# sandbox has already shown MFA/login throttling after rapid-fire concurrent
-# logins (see TROUBLESHOOTING.md #8), and two jobs sharing one browser
-# instance would step on each other's page anyway.
-_active_job_id: str | None = None
-
-
-def try_start(job_id: str) -> bool:
-    global _active_job_id
-    if _active_job_id is not None:
-        return False
-    _active_job_id = job_id
-    return True
-
-
-def release(job_id: str) -> None:
-    global _active_job_id
-    if _active_job_id == job_id:
-        _active_job_id = None
-
-
-def active_job_id() -> str | None:
-    return _active_job_id
-
-
-# Short-window idempotency cache: if the exact same request (same key) comes
-# in again within IDEMPOTENCY_TTL_SECONDS — whether the first call is still
-# running or just finished — hand back the same job instead of starting
-# automation again. This is NOT the long-lived "freshness" cache/DB storage
-# discussed separately (stakeholder was explicit that must still hit Athena
-# live every real request) — it only protects against duplicate/retried
-# calls for the same thing in a short window.
+# Short-window idempotency cache: if the exact same request (same key)
+# comes in again within IDEMPOTENCY_TTL_SECONDS — whether the first call is
+# still running or just finished — hand back the same job instead of
+# starting work again. This is NOT the long-lived "freshness" cache/DB
+# storage discussed separately (stakeholder was explicit that must still
+# hit Athena live every real request); it only protects against
+# duplicate/retried calls for the same thing in a short window.
 IDEMPOTENCY_TTL_SECONDS = 60
 _idempotency_cache: dict[tuple, dict] = {}
 
 
-def make_cache_key(patient_id: str, sections, department, shorter: bool, live: bool = False) -> tuple:
-    # `live` is part of the key too — a live=True caller wanting the
-    # screenshot stream should never get deduped into a live=False job that
-    # never captured any frames.
+def make_cache_key(patient_id: str, sections, department,
+                   include_history: bool = False,
+                   include_care_plan: bool = False,
+                   include_archived: bool = False,
+                   start_date: str | None = None,
+                   end_date: str | None = None) -> tuple:
+    # `include_history` is part of the key: a caller asking for history
+    # must never be deduped onto a cached run that skipped it and handed
+    # back a goal list with every progress history empty.
     sections_key = tuple(sorted(sections)) if sections is not None else None
-    return (patient_id, sections_key, department, shorter, live)
+    return (patient_id, sections_key, department, include_history,
+            include_care_plan, include_archived, start_date, end_date)
 
 
 def get_cached_job_id(key: tuple) -> str | None:

@@ -4,3 +4,8 @@ __pycache__/
 venv/
 .venv/
 *.log
+
+# Raw GraphQL captures from debugging. Real sandbox patient data —
+# never commit these; the queries they informed live in gql_queries.py
+# and docs/ENDPOINTS.md records what each returns.
+gql_*.json
