@@ -31,9 +31,21 @@ import base64
 import json
 import time
 
-# Renew with this much life left. Generous relative to a 5-minute token:
-# a request that starts just before expiry must still be able to finish.
-RENEW_MARGIN_S = 90
+# Renew with this much life left. Sized against the cost of renewing, not
+# picked for neatness — the margin must comfortably exceed how long an
+# acquisition takes, or the token expires mid-renewal and the gap this
+# whole design avoids comes straight back.
+#
+# Measured on the deployed instance: athenahealth issues a ~300s token,
+# and an acquisition takes ~60s (it usually has to reload a page to make
+# the app re-authenticate). At the previous 90s margin renewal began at
+# 83s remaining and finished at 16s — barely 20s of slack, and one slow
+# acquisition away from failing.
+#
+# 150s renews at the halfway point of the token's life, leaving ~90s of
+# slack over a 60s acquisition. Renewals stay cheap, so doing them more
+# often costs little.
+RENEW_MARGIN_S = 150
 
 # Treat a token as unusable below this. Distinct from the margin above so a
 # request arriving mid-renewal can still use a token that has enough left.
