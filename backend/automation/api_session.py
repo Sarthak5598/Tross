@@ -354,8 +354,15 @@ class ApiSession:
             "sessionIdleSecondsLeft": (
                 round(self._http.seconds_until_session_expiry) if self._http else None),
             "hasHeaders": bool(headers or self._http_headers),
-            "context": (headers or {}).get("x-athena-context"),
-            "environment": (headers or {}).get("x-athena-environment"),
+            # Read from whichever path is live. These came only from the
+            # browser capture before, so /health reported null for both
+            # while the HTTP path was working perfectly — a diagnostic
+            # surface that lies about a healthy service is worse than one
+            # that says nothing.
+            "context": ((self._http_headers or headers or {})
+                        .get("x-athena-context")),
+            "environment": ((self._http_headers or headers or {})
+                            .get("x-athena-environment")),
             "sessionError": self._last_error,
         }
 
