@@ -10,6 +10,11 @@ import pyotp
 
 USERNAME_SELECTOR = "#athena-username"
 PASSWORD_SELECTOR = "#athena-password"
+
+# The password -> MFA transition re-enables the shared input. Generous,
+# because it is a page transition on a 1GB instance, and failing here
+# costs a whole login.
+MFA_READY_TIMEOUT_MS = 60_000
 SUBMIT_BUTTON_SELECTOR = "#athena-o-form-button-bar > div.fe_c_root.fe_f_all > div > button"
 
 # Athena redirects through identity.athenahealth.com during MFA, then lands
@@ -87,9 +92,29 @@ async def login(page, username: str, password: str, totp_secret: str, on_step) -
     await page.click(SUBMIT_BUTTON_SELECTOR)
     await on_step("Submitted login form")
 
+    # The MFA step reuses the SAME input, so "the field exists" does not
+    # mean the page is ready for the code — right after submit the field is
+    # still present, still holding the password, and disabled while the
+    # form processes. Filling then fails with "element is not enabled"
+    # until it times out.
+    #
+    # Wait for it to be genuinely ready: enabled, and no longer carrying
+    # the password. On a small instance that transition can take well over
+    # the default timeout, which is what a real failure looked like.
     await page.wait_for_selector(PASSWORD_SELECTOR, timeout=LOGIN_TIMEOUT_MS)
+    await page.wait_for_function(
+        """() => {
+            const el = document.querySelector('#athena-password');
+            return el && !el.disabled && el.value === '';
+        }""",
+        timeout=MFA_READY_TIMEOUT_MS,
+    )
     await on_step("MFA step loaded")
 
+    # Generated AFTER the wait, never before. Codes are valid for a single
+    # 30-second window, so one minted ahead of a slow transition can be
+    # expired by the time it is submitted — a failure that looks like bad
+    # credentials rather than bad timing.
     code = pyotp.TOTP(totp_secret).now()
     await page.fill(PASSWORD_SELECTOR, code)
     await on_step("Filled TOTP code")

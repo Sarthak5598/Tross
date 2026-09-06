@@ -93,6 +93,10 @@ def set_department(job_id: str, department: str | None) -> None:
 
 
 def add_step(job_id: str, message: str) -> None:
+    """Steps are readable via GET /api/jobs/{id}, so they get the same
+    treatment as error messages."""
+    from automation.redact import redact
+    message = redact(message)
     # Defensive: a job can be evicted (see MAX_RETAINED_JOBS) while a very
     # long-running one is still emitting steps. Losing a log line is fine;
     # crashing the automation over it is not.

@@ -2,6 +2,7 @@ import asyncio
 from datetime import datetime, timezone
 
 import jobs
+from automation.redact import redact
 # Browser-side errors: the browser is no longer in the request path, but
 # startup warm-up still drives a real login + patient search, so these can
 # still surface from there.
@@ -38,7 +39,9 @@ def classify_error(exc: Exception) -> tuple[str, str]:
     these become HTTP status codes."""
     from automation.graphql import PatientNotFound, InvalidRequest
 
-    text = str(exc)
+    # Everything here can reach an unauthenticated caller, so it is
+    # redacted at the boundary rather than at each call site.
+    text = redact(str(exc))
     # The API path raises its own not-found (athenahealth embeds CODE: 404
     # in a 200 body); map it to the same errorType the DOM path uses so a
     # caller sees one contract regardless of source.
