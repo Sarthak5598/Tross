@@ -1,9 +1,12 @@
 """End-to-end check. Every wait is bounded — the previous bash harness
 polled a job id that was never created and spun forever."""
-import json, subprocess, sys, time, urllib.error, urllib.request
+import json, os, re, sys, time, urllib.error, urllib.request
 from concurrent.futures import ThreadPoolExecutor
 
-BASE = "http://localhost:8042"
+# Defaults to the deployed instance; override for local:
+#   python tests/test_e2e.py http://localhost:8000
+BASE = (sys.argv[1] if len(sys.argv) > 1
+        else os.environ.get("TROSS_API_BASE", "http://52.91.250.2:8000"))
 
 def call(method, path, timeout=90):
     req = urllib.request.Request(BASE + path, method=method)
@@ -65,6 +68,51 @@ for q, want in (("patient_id=999999", 404), ("patient_id=1131", 404),
     d = body.get("detail", {})
     mark = "OK " if code == want else "BAD"
     print(f"  {mark} {q:<38} {code} (want {want})  {str(d.get('message'))[:50]}")
+
+print("\n-- plan filtering (1135 carries 3 plans, 2 archived) --")
+for q, label in (("patient_id=1135", "default"),
+                 ("patient_id=1135&include_archived=true", "+archived"),
+                 ("patient_id=1133&include_care_plan=true", "1133 +care plan")):
+    _, job, _ = run(q + "&wait=true")
+    r = job.get("result") or {}
+    sc = r.get("planScope") or {}
+    print(f"  {label:<16} goals={len(r.get('behavioralHealthGoals') or []):<3} "
+          f"plans={sc.get('returned')}/{sc.get('totalOnRecord')} "
+          f"archivedExcluded={sc.get('excludedArchived')}")
+
+print("\n-- date filter (must narrow history only) --")
+for q, label in (("include_history=true", "all dates"),
+                 ("include_history=true&start_date=2026-01-01&end_date=2026-06-30", "jan-jun 2026")):
+    _, job, _ = run(f"patient_id=1133&wait=true&{q}")
+    g = (job.get("result") or {}).get("behavioralHealthGoals") or []
+    print(f"  {label:<14} goalsWithHistory={sum(1 for x in g if x['goal_progress_history']):<3} "
+          f"objectives={sum(len(x.get('objectives') or []) for x in g)}")
+
+print("\n-- idempotency --")
+a = call("POST", "/api/patient?patient_id=1137")[1]
+b = call("POST", "/api/patient?patient_id=1137")[1]
+c = call("POST", "/api/patient?patient_id=1137&include_history=true")[1]
+print(f"  repeat -> same job: {a.get('jobId') == b.get('jobId')}   deduped={b.get('deduped')}")
+print(f"  differing flag -> new job: {c.get('jobId') != a.get('jobId')}")
+
+print("\n-- departments --")
+code, body = call("GET", "/api/departments")
+print(f"  GET /api/departments -> {code}, {len(body.get('departments') or [])} listed")
+for d, label in (("SH_OH_SHAKER", "code"), ("4", "numeric id"), ("SH%20OH%20-%20Shaker", "label")):
+    c2, _ = call("POST", f"/api/patient?patient_id=1133&wait=true&sections=summary&department={d}")
+    print(f"  {label:<12} -> {c2}")
+
+print("\n-- token health --")
+_, h = call("GET", "/health")
+sess = h.get("apiSession", {})
+print(f"  hasToken={sess.get('hasToken')} remaining={sess.get('secondsRemaining')}s "
+      f"lastError={sess.get('lastError')}")
+
+print("\n-- no secrets in an error body --")
+_, err = call("POST", "/api/patient?patient_id=abc&wait=true")
+blob = json.dumps(err)
+leaky = re.findall(r'value="[^"]{4,}"', blob)
+print(f"  body {len(blob)} chars, unredacted value= attributes: {len(leaky)}")
 
 print("\n-- 4 concurrent (no single-job lock any more) --")
 t0 = time.time()
