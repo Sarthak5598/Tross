@@ -155,7 +155,9 @@ class TokenManager:
         The lock is taken only for the swap, not for the acquisition, so
         readers are never blocked behind a slow network call.
         """
-        token, context = await self._acquire()
+        # Tell acquisition what "newer" means, so it escalates instead of
+        # handing back the token we are trying to replace.
+        token, context = await self._acquire(self._expires_at)
         expiry = decode_expiry(token)
         # Never accept a "replacement" that expires no later than what we
         # already hold. Storing it would leave needs_renewal true forever

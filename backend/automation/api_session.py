@@ -76,19 +76,32 @@ class ApiSession:
             on_step=on_step,
         ))
 
-    def _captured_token_is_fresh(self) -> bool:
-        """Is the token the page last sent us still usable?
+    def _captured_token_is_fresh(self, min_expiry: float = 0.0) -> bool:
+        """Is the token the page last sent us good enough to use?
 
-        The app re-issues GraphQL calls as it runs, and HeaderCapture keeps
-        the newest headers, so usually a valid token is already sitting
-        there and no page interaction is needed at all.
+        `min_expiry` is what makes this correct during renewal. Without it
+        the question is only "has it expired yet?", and the token we are
+        trying to REPLACE answers yes — it is the one currently in use, so
+        of course it has life left.
+
+        That made _provoke_graphql return at its first step and never
+        escalate to the path that actually provokes a new token. The loop
+        then re-attempted every 30s, each time re-reading the same token,
+        until the app happened to issue a request of its own. Observed as
+        the token bottoming out at ~8s remaining every cycle no matter what
+        the renewal margin was.
+
+        Passing the current expiry turns the question into "is there
+        anything NEWER here?", which is what the caller actually wants.
         """
         headers = (self._capture.headers if self._capture else None) or {}
         token = headers.get("authorization", "")
         expiry = decode_expiry(token.replace("Bearer ", ""))
-        return bool(expiry) and (expiry - time.time()) > MIN_TOKEN_LIFE_S
+        if not expiry or (expiry - time.time()) <= MIN_TOKEN_LIFE_S:
+            return False
+        return expiry > min_expiry
 
-    async def _provoke_graphql(self, on_step) -> None:
+    async def _provoke_graphql(self, on_step, min_expiry: float = 0.0) -> None:
         """Ensure we hold a currently-valid token, as cheaply as possible.
 
         Ordered by cost, because getting this wrong is expensive: an
@@ -100,18 +113,18 @@ class ApiSession:
           2. Reload a LIGHT page to make the app re-auth -> a few seconds.
           3. Open Care Management (first run only) -> tens of seconds.
         """
-        if self._captured_token_is_fresh():
+        if self._captured_token_is_fresh(min_expiry):
             return
 
         if self._capture and self._capture.headers:
             await self._capture.refresh()
-            if self._captured_token_is_fresh():
+            if self._captured_token_is_fresh(min_expiry):
                 return
 
         await search_patient(self._page, self._warmup_patient_id, on_step)
         await open_care_management_pane(self._page, on_step)
 
-    async def _attempt(self, on_step) -> tuple[str, str]:
+    async def _attempt(self, on_step, min_expiry: float = 0.0) -> tuple[str, str]:
         """One acquisition attempt. Raises if it could only produce a token
         we already hold.
 
@@ -131,14 +144,14 @@ class ApiSession:
         away and do a real re-login, which actually produces a new token.
         """
         await self._ensure_logged_in(on_step)
-        await self._provoke_graphql(on_step)
+        await self._provoke_graphql(on_step, min_expiry)
         headers = await self._capture.wait_for_headers()
-        if not self._captured_token_is_fresh():
+        if not self._captured_token_is_fresh(min_expiry):
             raise RuntimeError(
                 "Acquisition produced no fresher token than the one held")
         return headers["authorization"], headers.get("x-athena-context", "")
 
-    async def _acquire(self) -> tuple[str, str]:
+    async def _acquire(self, min_expiry: float = 0.0) -> tuple[str, str]:
         """TokenManager calls this when it needs credentials.
 
         Serialised by TokenManager's own single-flight lock, so concurrent
@@ -162,7 +175,7 @@ class ApiSession:
             pass
 
         try:
-            token = await self._attempt(on_step)
+            token = await self._attempt(on_step, min_expiry)
             self._last_error = None
             return token
         except Exception as first:
@@ -172,7 +185,7 @@ class ApiSession:
         self._capture = None          # belongs to the discarded page
         self._page = None
         try:
-            token = await self._attempt(on_step)
+            token = await self._attempt(on_step, min_expiry)
             self._last_error = None
             return token
         except Exception as exc:
