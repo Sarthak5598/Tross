@@ -22,8 +22,14 @@ COPY automation ./automation
 
 EXPOSE 8000
 
-# Exactly ONE worker, always. The persistent athena session, the
-# single-job lock, and the idempotency cache all live in process memory —
-# a second worker would hold its own login and silently disagree with the
-# first. Do not add --workers.
+# Exactly ONE worker, always. The logged-in athena session, its token,
+# the job records and the idempotency cache all live in process memory.
+# A second worker would run its own login — and because TOTP codes are
+# single-use within their 30-second window, two logins racing there means
+# one of them simply fails. It would also dedupe against its own cache
+# only, so identical concurrent requests would both do the work.
+#
+# This is not a throughput limit: requests are plain concurrent HTTP
+# calls upstream and do not contend inside the process. Do not add
+# --workers.
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
