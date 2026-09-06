@@ -102,11 +102,42 @@ class TokenManager:
             return self._token, self._context
 
     async def invalidate(self) -> None:
-        """Drop the current token — call after a 401/403 so the next get()
-        fetches a fresh one instead of retrying a dead token."""
+        """Drop the current token — call after a 401/403, where we know the
+        token is genuinely dead.
+
+        NOT for proactive renewal: see _renew(), which must not create a
+        window where we hold nothing.
+        """
         async with self._lock:
             self._token = None
             self._expires_at = 0.0
+
+    async def _renew(self) -> None:
+        """Replace the token while the current one keeps serving.
+
+        The old token stays in place for the whole acquisition and is
+        swapped out only once a replacement is in hand. That ordering is
+        the entire point of this method.
+
+        An earlier version renewed by calling invalidate() and then get(),
+        which threw away a token still good for ~90 seconds and only then
+        started fetching. Acquisition can take up to ~40s (it may have to
+        reload a page to make the app re-auth), so the service held NO
+        token for that whole stretch and any request arriving in it paid
+        the acquisition cost — measured at 18.4s against 7.4s normally.
+        Visible on /health as secondsRemaining sitting at 0 for ~40s every
+        renewal cycle.
+
+        The lock is taken only for the swap, not for the acquisition, so
+        readers are never blocked behind a slow network call.
+        """
+        token, context = await self._acquire()
+        expiry = decode_expiry(token)
+        async with self._lock:
+            self._token = token
+            self._context = context
+            self._expires_at = expiry if expiry else time.time() + 300
+            self._last_error = None
 
     async def run_renewal_loop(self, interval_s: int = 30) -> None:
         """Background task: keep a valid token ready so no request ever
@@ -116,8 +147,7 @@ class TokenManager:
         while True:
             try:
                 if self.needs_renewal():
-                    await self.invalidate()
-                    await self.get()
+                    await self._renew()
             except Exception as exc:
                 self._last_error = f"{type(exc).__name__}: {exc}"
             await asyncio.sleep(interval_s)
