@@ -9,12 +9,30 @@ BASE = (sys.argv[1] if len(sys.argv) > 1
         else os.environ.get("TROSS_API_BASE", "http://52.91.250.2:8000"))
 
 def call(method, path, timeout=90):
+    """Returns (status, body). Status 0 means the request itself failed.
+
+    The body is parsed as JSON when it is JSON and returned as {"text": ...}
+    when it is not. That distinction matters: an earlier version parsed
+    every response as JSON, so /docs and /redoc — which serve HTML — raised
+    and were reported as status 0. The suite then failed and rolled back a
+    perfectly healthy deploy. A test that reports a working endpoint as
+    broken is worse than not testing it.
+    """
     req = urllib.request.Request(BASE + path, method=method)
+
+    def decode(status, raw):
+        if not raw:
+            return status, {}
+        try:
+            return status, json.loads(raw)
+        except ValueError:
+            return status, {"text": raw[:200].decode("utf-8", "replace")}
+
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
-            return r.status, json.loads(r.read())
+            return decode(r.status, r.read())
     except urllib.error.HTTPError as e:
-        return e.code, json.loads(e.read() or b"{}")
+        return decode(e.code, e.read())
     except Exception as e:
         return 0, {"err": str(e)}
 
