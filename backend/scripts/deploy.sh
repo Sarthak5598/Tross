@@ -29,6 +29,11 @@ fail() { printf '\033[31mFAILED: %s\033[0m\n' "$1"; }
 
 cd "$REPO" || { fail "no repo at $REPO"; exit 1; }
 
+# Fail before touching anything if the environment file is missing — it is
+# gitignored, so a fresh clone will not have it, and a container without it
+# starts and then cannot log in.
+[ -f "$REPO/backend/.env" ] || { fail "no backend/.env on this host"; exit 1; }
+
 say "Current state"
 BEFORE=$(git rev-parse --short HEAD)
 echo "  running commit: $BEFORE"
@@ -89,12 +94,17 @@ if [ "$HEALTHY" != "1" ]; then
   sudo docker logs --tail 40 "$NAME" 2>&1 | sed 's/^/    /'
 else
   say "Running the endpoint suite against the new build"
-  if [ -f backend/tests/test_e2e.py ]; then
+  # A missing python3 must not trigger a rollback of a build that is
+  # otherwise healthy — that would be the tooling breaking the deploy.
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "  python3 not installed here; skipping (login gate already passed)"
+    SUITE=0
+  elif [ ! -f backend/tests/test_e2e.py ]; then
+    echo "  suite not found; skipping"
+    SUITE=0
+  else
     (cd backend && python3 tests/test_e2e.py "$BASE")
     SUITE=$?
-  else
-    echo "  suite not found, skipping"
-    SUITE=0
   fi
 fi
 
