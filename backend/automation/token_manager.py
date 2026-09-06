@@ -42,10 +42,22 @@ import time
 # 83s remaining and finished at 16s — barely 20s of slack, and one slow
 # acquisition away from failing.
 #
-# 150s renews at the halfway point of the token's life, leaving ~90s of
-# slack over a 60s acquisition. Renewals stay cheap, so doing them more
-# often costs little.
-RENEW_MARGIN_S = 150
+# Acquisition time turned out to be highly VARIABLE, not just slow: two
+# observed renewals on the same deployed instance took ~60s and ~145s.
+# The slow one triggered at 146s remaining and completed at 3s — no gap,
+# but three seconds of headroom is luck rather than design.
+#
+# The margin is therefore the longest acquisition we can absorb, and it
+# is set near the top of what a 300s token allows rather than to a tidy
+# fraction of it. At 220s renewal begins about 80s after a token is
+# issued and tolerates an acquisition of up to 220s.
+#
+# This is a mitigation, not a cure. The real cost is that acquiring
+# usually means reloading a page to make the app re-authenticate, and on
+# a 1GB instance that page is slow and unpredictable. Making acquisition
+# cheap — so the captured headers always already hold a fresh token —
+# would remove the need for a large margin entirely.
+RENEW_MARGIN_S = 220
 
 # Treat a token as unusable below this. Distinct from the margin above so a
 # request arriving mid-renewal can still use a token that has enough left.
