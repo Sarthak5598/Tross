@@ -52,6 +52,11 @@ RENEW_MARGIN_S = 220
 # request arriving mid-renewal can still use a token that has enough left.
 MIN_USABLE_S = 20
 
+# Ceiling on the retry backoff. Long enough to stop hammering a login that
+# is not going to succeed, short enough that recovery is automatic once
+# whatever was wrong clears.
+MAX_RETRY_INTERVAL_S = 300
+
 
 def decode_expiry(token: str) -> float | None:
     """Read `exp` out of the JWT without verifying it — we're scheduling
@@ -62,6 +67,10 @@ def decode_expiry(token: str) -> float | None:
         return float(json.loads(base64.urlsafe_b64decode(payload))["exp"])
     except Exception:
         return None
+
+
+class SessionUnavailable(Exception):
+    """No usable token, and the request path will not wait for one."""
 
 
 class TokenManager:
@@ -90,8 +99,26 @@ class TokenManager:
     def needs_renewal(self) -> bool:
         return not self._token or self.seconds_remaining < RENEW_MARGIN_S
 
+    def current(self) -> tuple[str, str]:
+        """The token we hold, or raise. Never acquires, never blocks.
+
+        This is what the REQUEST path uses. Acquisition belongs to the
+        background worker, and letting a request trigger it was a genuine
+        design fault: when a login started failing, every incoming request
+        queued behind a 120s page action, retried, and hung for minutes
+        before timing out. A caller would far rather have 503 in
+        milliseconds than a connection that never answers.
+        """
+        if not self._usable():
+            detail = f" ({self._last_error})" if self._last_error else ""
+            raise SessionUnavailable(
+                f"No valid athenahealth session right now{detail}")
+        return self._token, self._context
+
     async def get(self) -> tuple[str, str]:
         """Current token and context, acquiring one if needed.
+
+        For the STARTUP and renewal paths. Request handling uses current().
 
         The double check around the lock is the single-flight part: many
         callers may find the token missing, but only the first through the
@@ -163,16 +190,28 @@ class TokenManager:
 
     async def run_renewal_loop(self, interval_s: int = 30) -> None:
         """Background task: keep a valid token ready so no request ever
-        pays for acquisition. Failures are recorded and retried rather than
-        killing the loop — a transient athenahealth outage shouldn't
-        permanently stop renewal."""
+        pays for acquisition.
+
+        Failures are recorded and retried rather than killing the loop — a
+        transient athenahealth outage shouldn't permanently stop renewal.
+
+        Retries back off. A failing renewal escalates to a full re-login,
+        and hammering that every 30 seconds is both useless against a
+        problem that isn't transient and a good way to get an account rate
+        limited or locked — which turns a recoverable outage into one that
+        needs a human.
+        """
+        delay = interval_s
         while True:
             try:
                 if self.needs_renewal():
                     await self._renew()
+                self._last_error = None
+                delay = interval_s
             except Exception as exc:
                 self._last_error = f"{type(exc).__name__}: {exc}"
-            await asyncio.sleep(interval_s)
+                delay = min(delay * 2, MAX_RETRY_INTERVAL_S)
+            await asyncio.sleep(delay)
 
     def status(self) -> dict:
         """For /health — a broken auth should be visible here rather than

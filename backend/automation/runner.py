@@ -38,6 +38,7 @@ def classify_error(exc: Exception) -> tuple[str, str]:
     without string-matching. See STATUS_FOR_ERROR_TYPE in main.py for how
     these become HTTP status codes."""
     from automation.graphql import PatientNotFound, InvalidRequest
+    from automation.token_manager import SessionUnavailable
 
     # Everything here can reach an unauthenticated caller, so it is
     # redacted at the boundary rather than at each call site.
@@ -49,6 +50,10 @@ def classify_error(exc: Exception) -> tuple[str, str]:
         return "patient_not_found", text
     if isinstance(exc, (InvalidRequest, ValueError)):
         return "invalid_request", text
+    # We hold no usable session. Nothing is wrong with the caller's
+    # request, and it may well work shortly — 503 says exactly that.
+    if isinstance(exc, SessionUnavailable):
+        return "site_unavailable", text
     if isinstance(exc, PatientNotFoundError):
         return "patient_not_found", text
     if isinstance(exc, PatientRecordMismatchError):

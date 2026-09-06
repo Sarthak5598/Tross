@@ -232,7 +232,9 @@ class ApiSession:
         version sent only `authorization` + `x-athena-context` and failed
         inside the resolver with "Unspecified Athena environment".
         """
-        token, _ = await self._tokens.get()      # refreshes if needed
+        # current(), not get(): a request must never trigger a login. See
+        # TokenManager.current().
+        token, _ = self._tokens.current()
         headers = dict(self._capture.headers or {})
         if not headers:
             raise RuntimeError("No API headers captured yet")
