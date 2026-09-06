@@ -31,7 +31,7 @@ from automation.login import login
 from automation.patient_search import search_patient
 from automation.care_plan import open_care_management_pane
 from automation.token_manager import TokenManager, decode_expiry
-from automation.token_source import HeaderCapture
+from automation.token_source import HeaderCapture, mint_token
 
 # Don't reuse a token with less than this left — a request that starts
 # near expiry could outlive it mid-flight.
@@ -124,6 +124,32 @@ class ApiSession:
         await search_patient(self._page, self._warmup_patient_id, on_step)
         await open_care_management_pane(self._page, on_step)
 
+    async def _mint(self, on_step) -> tuple[str, str] | None:
+        """Fast path: ask the app's own token endpoint for a fresh JWT.
+
+        This is what renewal should almost always do. The alternative —
+        reloading a page and hoping to intercept a request the app makes
+        on its own — costs 60-200s on a small instance and depends on the
+        page choosing to do something. This costs ~0.7s and depends on
+        nothing.
+
+        Returns None rather than raising when it can't be used, so the
+        caller falls back to the slow path instead of failing outright.
+        The endpoint is undocumented, so it must never be the only way in.
+        """
+        if not self._page or not (self._capture and self._capture.headers):
+            return None                 # no session yet — bootstrap first
+        try:
+            token, ttl = await mint_token(self._page)
+        except Exception as exc:
+            await on_step(f"Token endpoint unavailable, falling back: {exc}")
+            return None
+        headers = dict(self._capture.headers)
+        headers["authorization"] = f"Bearer {token}"
+        self._capture._headers = headers          # keep the capture current
+        await on_step(f"Minted a token ({ttl}s)")
+        return f"Bearer {token}", headers.get("x-athena-context", "")
+
     async def _attempt(self, on_step, min_expiry: float = 0.0) -> tuple[str, str]:
         """One acquisition attempt. Raises if it could only produce a token
         we already hold.
@@ -144,6 +170,11 @@ class ApiSession:
         away and do a real re-login, which actually produces a new token.
         """
         await self._ensure_logged_in(on_step)
+
+        minted = await self._mint(on_step)
+        if minted:
+            return minted
+
         await self._provoke_graphql(on_step, min_expiry)
         headers = await self._capture.wait_for_headers()
         if not self._captured_token_is_fresh(min_expiry):
@@ -201,10 +232,14 @@ class ApiSession:
         version sent only `authorization` + `x-athena-context` and failed
         inside the resolver with "Unspecified Athena environment".
         """
-        await self._tokens.get()          # refreshes if needed
+        token, _ = await self._tokens.get()      # refreshes if needed
         headers = dict(self._capture.headers or {})
         if not headers:
             raise RuntimeError("No API headers captured yet")
+        # The non-auth headers come from the capture (they never change);
+        # the token comes from TokenManager, which is the only thing that
+        # knows whether it is current.
+        headers["authorization"] = token
         client = CareManagementClient(headers)
         return client.for_department(department_id) if department_id else client
 

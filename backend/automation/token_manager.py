@@ -31,32 +31,21 @@ import base64
 import json
 import time
 
-# Renew with this much life left. Sized against the cost of renewing, not
-# picked for neatness — the margin must comfortably exceed how long an
-# acquisition takes, or the token expires mid-renewal and the gap this
-# whole design avoids comes straight back.
+# Renew with this much life left.
 #
-# Measured on the deployed instance: athenahealth issues a ~300s token,
-# and an acquisition takes ~60s (it usually has to reload a page to make
-# the app re-authenticate). At the previous 90s margin renewal began at
-# 83s remaining and finished at 16s — barely 20s of slack, and one slow
-# acquisition away from failing.
+# The normal path costs ~0.7s: the app exposes its own token endpoint and
+# ApiSession._mint() calls it directly (see token_source.mint_token). At
+# that price the margin barely matters.
 #
-# Acquisition time turned out to be highly VARIABLE, not just slow: two
-# observed renewals on the same deployed instance took ~60s and ~145s.
-# The slow one triggered at 146s remaining and completed at 3s — no gap,
-# but three seconds of headroom is luck rather than design.
+# It is sized for the FALLBACK. If that endpoint ever changes or fails,
+# acquisition reverts to reloading a page and intercepting a request the
+# app makes on its own, which was measured at 60s, 145s and 165s on the
+# deployed instance. 220s of a 300s token means even the slowest observed
+# fallback completes with time in hand.
 #
-# The margin is therefore the longest acquisition we can absorb, and it
-# is set near the top of what a 300s token allows rather than to a tidy
-# fraction of it. At 220s renewal begins about 80s after a token is
-# issued and tolerates an acquisition of up to 220s.
-#
-# This is a mitigation, not a cure. The real cost is that acquiring
-# usually means reloading a page to make the app re-authenticate, and on
-# a 1GB instance that page is slow and unpredictable. Making acquisition
-# cheap — so the captured headers always already hold a fresh token —
-# would remove the need for a large margin entirely.
+# Before the token endpoint was found this margin was doing all the work,
+# and it could not: acquisition expanded to fill whatever it was set to,
+# bottoming the token out at ~8s remaining whether it was 90, 150 or 220.
 RENEW_MARGIN_S = 220
 
 # Treat a token as unusable below this. Distinct from the margin above so a

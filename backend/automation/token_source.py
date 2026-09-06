@@ -19,8 +19,36 @@ re-login is only needed if the session itself has died.
 """
 
 import asyncio
+import json
+import re
+from urllib.parse import quote
 
 GRAPHQL_URL_PART = "caremanagement-api/graphql"
+
+# The app's own token endpoint, found by watching which responses contain a
+# JWT while the Treatment Plan pane loads:
+#
+#   GET /<practice>/<ctx>/ax/jwt/get_jwt?scopes[]=...  ->  {jwt, expires_in}
+#
+# Same-origin and authenticated by the session cookie, so calling it from
+# inside the page needs no credentials of our own. It is the difference
+# between renewal costing 0.7s and renewal costing ~200s: the alternative
+# is reloading a page and hoping to intercept a request the app makes on
+# its own, which on a small instance takes most of the token's life.
+JWT_ENDPOINT = "/ax/jwt/get_jwt"
+
+# Exactly the scopes on the token the Care Management API accepts, read off
+# a real captured token's `scp` claim. Asking for a different set gets a
+# valid JWT that the resolver then rejects.
+CARE_MANAGEMENT_SCOPES = (
+    "athena/user/CareManagement.Api.*",
+    "user/Condition.read",
+    "user/Observation.read",
+)
+
+# Matches the /<practice>/<context>/ prefix every app URL carries, e.g.
+# https://preview.athenahealth.com/32817/15/globalframeset.esp
+_APP_PREFIX = re.compile(r"^(https://[^/]+/\d+/\d+)")
 
 WANTED_HEADERS = (
     "authorization",
@@ -90,6 +118,48 @@ class HeaderCapture:
             return await self.wait_for_headers(timeout_s)
         except asyncio.TimeoutError:
             return self._headers or {}
+
+
+def _app_prefix(page) -> str | None:
+    """The origin + /<practice>/<context>/ prefix, from any live frame.
+
+    Derived rather than hardcoded — the practice id is part of the URL and
+    differs per environment.
+    """
+    for url in [page.url] + [f.url for f in page.frames]:
+        found = _APP_PREFIX.match(url or "")
+        if found:
+            return found.group(1)
+    return None
+
+
+async def mint_token(page, scopes=CARE_MANAGEMENT_SCOPES) -> tuple[str, int]:
+    """Ask the app's token endpoint for a fresh JWT. Returns (jwt, ttl).
+
+    Runs the fetch inside the page so the session cookie, origin and any
+    CSRF handling come for free. Raises if the endpoint is unreachable or
+    returns something without a JWT, so the caller can fall back to the
+    slow provoke-and-intercept path.
+    """
+    prefix = _app_prefix(page)
+    if not prefix:
+        raise RuntimeError("No app URL to derive the JWT endpoint from")
+
+    query = "&".join("scopes[]=" + quote(s, safe="") for s in scopes)
+    url = f"{prefix}{JWT_ENDPOINT}?{query}"
+
+    result = await page.evaluate("""async (u) => {
+        const r = await fetch(u, {credentials: 'include'});
+        return {status: r.status, body: (await r.text()).slice(0, 8000)};
+    }""", url)
+
+    if result["status"] != 200:
+        raise RuntimeError(f"get_jwt returned HTTP {result['status']}")
+    try:
+        payload = json.loads(result["body"])
+        return payload["jwt"], int(payload.get("expires_in") or 0)
+    except (ValueError, KeyError) as exc:
+        raise RuntimeError(f"get_jwt returned no jwt: {result['body'][:120]}") from exc
 
 
 async def acquire_via_browser(page, capture: HeaderCapture) -> tuple[str, str]:
