@@ -135,6 +135,10 @@ class AthenaHttpSession:
 
     # -- the flow -------------------------------------------------------
 
+    def _wait_for_next_totp_window(self):
+        time.sleep(TOTP_PERIOD_S - (time.time() % TOTP_PERIOD_S) + 1)
+        self._last_totp = None
+
     def _fresh_totp(self):
         """A code we have not already spent.
 
