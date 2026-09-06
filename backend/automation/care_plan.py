@@ -47,7 +47,9 @@ TREATMENT_PLAN_LINK_TEXT = "Go to Treatment Plan"
 # Still used as the "pane has finished rendering" signal.
 GOAL_ITEM_SELECTOR = ".acc_c_cm-goal-panel-twopane_view__goal-panel-content"
 
-NAV_TIMEOUT_MS = 15_000
+# Same reasoning as patient_search.SEARCH_TIMEOUT_MS: this is startup-path
+# navigation, and failing fast here buys nothing.
+NAV_TIMEOUT_MS = 45_000
 PANE_LOAD_TIMEOUT_MS = 45_000
 
 

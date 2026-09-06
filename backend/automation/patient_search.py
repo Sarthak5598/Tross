@@ -61,7 +61,11 @@ PATIENT_NOT_FOUND_TEXT = "does not exist, or you do not have permission"
 # exactly like the not-found case used to.
 PATIENT_OTHER_RECORD_TEXT = "registered in this provider group, but under a different patient record"
 
-SEARCH_TIMEOUT_MS = 15_000
+# Sized for a slow day, not a fast one. This runs on the startup path
+# where a failure means the service comes up with no session at all, and
+# 15s was not enough to find frMain on a loaded machine even though the
+# login itself had completed fine.
+SEARCH_TIMEOUT_MS = 45_000
 
 
 class PatientNotFoundError(Exception):
