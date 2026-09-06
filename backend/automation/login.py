@@ -15,6 +15,11 @@ PASSWORD_SELECTOR = "#athena-password"
 # because it is a page transition on a 1GB instance, and failing here
 # costs a whole login.
 MFA_READY_TIMEOUT_MS = 120_000
+
+# Short on purpose: this only asks "which shape is this page?", and the
+# answer is immediate when the field exists. Waiting minutes to discover an
+# absent field would just stall the login it is meant to make robust.
+SHAPE_PROBE_MS = 10_000
 SUBMIT_BUTTON_SELECTOR = "#athena-o-form-button-bar > div.fe_c_root.fe_f_all > div > button"
 
 # Athena redirects through identity.athenahealth.com during MFA, then lands
@@ -90,9 +95,19 @@ async def select_department(page, department_page_url: str, department_label: st
 
 
 async def login(page, username: str, password: str, totp_secret: str, on_step) -> dict:
-    await page.fill(USERNAME_SELECTOR, username)
-    await on_step(f"Filled username ({username})")
+    # Both fields are normally present. On athenahealth's re-authentication
+    # page the username arrives pre-filled via login_hint and the field can
+    # be absent or read-only, so treat it as optional rather than assuming
+    # the shape. Cookies are cleared before we get here, which should mean
+    # the normal form — this is belt and braces for when it is not.
+    try:
+        await page.wait_for_selector(USERNAME_SELECTOR, timeout=SHAPE_PROBE_MS)
+        await page.fill(USERNAME_SELECTOR, username)
+        await on_step(f"Filled username ({username})")
+    except Exception:
+        await on_step("No username field (re-auth page pre-fills it); continuing")
 
+    await page.wait_for_selector(PASSWORD_SELECTOR, timeout=LOGIN_TIMEOUT_MS)
     await page.fill(PASSWORD_SELECTOR, password)
     await on_step("Filled password")
 

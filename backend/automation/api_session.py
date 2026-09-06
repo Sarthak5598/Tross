@@ -66,8 +66,12 @@ class ApiSession:
             await on_step("Reusing existing authenticated session")
             return
 
+        # Clear cookies FIRST. A stale session cookie makes athenahealth
+        # serve its re-authentication page instead of the normal sign-in
+        # form, and that page does not match what login() drives.
+        await browser_pool.clear_session_cookies()
         await on_step(f"Opening {config.ATHENA_LOGIN_URL}")
-        await page.goto(config.ATHENA_LOGIN_URL)
+        await page.goto(config.ATHENA_LOGIN_URL, wait_until="domcontentloaded")
         browser_pool.record_login(await login(
             page,
             username=config.ATHENA_USERNAME,

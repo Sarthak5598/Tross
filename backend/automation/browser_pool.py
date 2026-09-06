@@ -154,6 +154,28 @@ async def reset_page() -> None:
     _page = None
 
 
+async def clear_session_cookies() -> None:
+    """Throw away athenahealth's cookies so the next navigation gets the
+    CLEAN login page.
+
+    reset_page() closes the page but the context — and its cookies —
+    survive. With a stale session cookie still present, going to the login
+    URL does not land on the normal sign-in form: athenahealth redirects to
+    its re-authentication page (SHOWBANNER=REFRESHTIMEOUT, prompt=login,
+    login_hint=<user>), which has a different layout. login() then waits
+    for a field that page does not present the same way and times out.
+
+    That is why a fresh process logs in fine while a long-running one fails
+    to recover: the difference is entirely the leftover cookies.
+    """
+    if _context is None:
+        return
+    try:
+        await _context.clear_cookies()
+    except Exception:
+        pass
+
+
 async def is_logged_in(page) -> bool:
     """Whether the persistent session can actually be reused.
 
