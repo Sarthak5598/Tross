@@ -49,8 +49,9 @@ GOAL_ITEM_SELECTOR = ".acc_c_cm-goal-panel-twopane_view__goal-panel-content"
 
 # Same reasoning as patient_search.SEARCH_TIMEOUT_MS: this is startup-path
 # navigation, and failing fast here buys nothing.
-NAV_TIMEOUT_MS = 45_000
-PANE_LOAD_TIMEOUT_MS = 45_000
+NAV_TIMEOUT_MS = 120_000
+# The heaviest page in the application, and the slowest thing we wait on.
+PANE_LOAD_TIMEOUT_MS = 180_000
 
 
 async def open_care_management_pane(page, on_step) -> None:

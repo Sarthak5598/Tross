@@ -14,7 +14,7 @@ PASSWORD_SELECTOR = "#athena-password"
 # The password -> MFA transition re-enables the shared input. Generous,
 # because it is a page transition on a 1GB instance, and failing here
 # costs a whole login.
-MFA_READY_TIMEOUT_MS = 60_000
+MFA_READY_TIMEOUT_MS = 120_000
 SUBMIT_BUTTON_SELECTOR = "#athena-o-form-button-bar > div.fe_c_root.fe_f_all > div > button"
 
 # Athena redirects through identity.athenahealth.com during MFA, then lands
@@ -46,7 +46,7 @@ SEARCH_INPUT_SELECTOR = "#searchinput"
 # timed out at 15s on a loaded machine while the login itself was fine.
 #
 # Nothing is gained by failing fast on a path that runs once an hour.
-LOGIN_TIMEOUT_MS = 60_000
+LOGIN_TIMEOUT_MS = 120_000
 
 
 async def _wait_for_app_shell(page, on_step) -> None:

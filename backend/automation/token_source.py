@@ -58,7 +58,10 @@ WANTED_HEADERS = (
 )
 
 # How long to wait for the app to make a GraphQL request we can read.
-CAPTURE_TIMEOUT_S = 20
+# How long to wait for the app to issue a GraphQL request we can read.
+# Only reached on the fallback path now that tokens are minted directly,
+# and that path is the slow one, so it gets room.
+CAPTURE_TIMEOUT_S = 90
 
 
 class HeaderCapture:

@@ -54,11 +54,22 @@ APP_SHELL_READY_CHECK = "() => !!(window.AH && AH.Frames.Top.Frame().navsearchob
 # #athena-username" on slower starts. Anywhere we genuinely want to fail
 # fast passes its own shorter timeout; this ceiling only exists to stop a
 # call hanging indefinitely.
-DEFAULT_ACTION_TIMEOUT_MS = 30_000
+# Every timeout in this project is set to 3-4x the slowest run actually
+# observed, not to the typical one. The reasoning: these guard a startup
+# path that runs once per container lifetime, where failing takes the
+# whole service down until the next attempt, and there is nothing to gain
+# by giving up early. Two outages came from timeouts sized for a good day.
+DEFAULT_ACTION_TIMEOUT_MS = 120_000
 
 # How long to give the search box to prove the reused session is actually
 # usable. Deliberately short — see is_logged_in().
-SESSION_USABLE_TIMEOUT_MS = 4_000
+# The one deliberately SHORT timeout, and the reason is the opposite of
+# the others: this asks "is the existing session still usable?", and a
+# wrong "yes" hands a wedged page to the next caller. But 4s was too eager
+# — a loaded machine can take longer than that to paint the nav, and a
+# false "no" costs a full ~30s re-login and burns a TOTP window. 20s is
+# still far below the cost of being wrong in either direction.
+SESSION_USABLE_TIMEOUT_MS = 20_000
 
 
 def _launch_args() -> list[str]:

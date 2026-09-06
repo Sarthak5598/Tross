@@ -63,6 +63,12 @@ DEFAULT_ENDPOINT = "https://caremanagement.preview.api.athena.io/caremanagement-
 # SLOWEST SINGLE CALL (~9s, a fat task-schedules response). Past that the
 # fan-out is no longer the bottleneck and more workers cannot help — the
 # rise at 32 is our own thread pool queueing, not their server.
+# A single upstream call is normally ~2s and the slowest observed was ~9s.
+# 90s is well past anything real, and the point is to distinguish "slow"
+# from "never" — JOB_TIMEOUT_S is the ceiling that actually protects the
+# caller, not this.
+REQUEST_TIMEOUT_S = 90
+
 MAX_CONCURRENT_CALLS = int(os.environ.get("GQL_MAX_CONCURRENCY", "16"))
 _POOL = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CALLS,
                            thread_name_prefix="gql")
@@ -181,7 +187,7 @@ class CareManagementClient:
         req.add_header("content-type", "application/json")
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
+            with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT_S) as resp:
                 body = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             detail = exc.read()[:500].decode("utf-8", "replace")

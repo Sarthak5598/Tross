@@ -40,6 +40,8 @@ def run(path, limit=120):
         time.sleep(1)
     return code, {"status": "POLL TIMEOUT"}, job_id
 
+fails = []
+
 ok, health = wait_health()
 print("warm-up:", "OK" if ok else "FAILED", json.dumps(health.get("apiSession", {}))[:200])
 if not ok:
@@ -114,9 +116,85 @@ blob = json.dumps(err)
 leaky = re.findall(r'value="[^"]{4,}"', blob)
 print(f"  body {len(blob)} chars, unredacted value= attributes: {len(leaky)}")
 
+print("\n-- every route responds --")
+for method, path, want in (("GET", "/health", 200), ("GET", "/api/departments", 200),
+                           ("GET", "/docs", 200), ("GET", "/redoc", 200),
+                           ("GET", "/openapi.json", 200),
+                           ("GET", "/api/jobs/does-not-exist", 404)):
+    got, _ = call(method, path, timeout=20)
+    if got != want:
+        fails.append(f"{method} {path} -> {got}, wanted {want}")
+    print(f"  {'OK ' if got == want else 'BAD'} {method:<5} {path:<26} {got}")
+
+print("\n-- every sections value returns only what was asked for --")
+SECTIONS = {"summary": "planSummary", "goals": "behavioralHealthGoals",
+            "concerns": "concerns", "characteristics": "clientCharacteristics",
+            "attestations": "attestationArtifacts"}
+for name, key in SECTIONS.items():
+    _, job, _ = run(f"patient_id=1133&wait=true&sections={name}")
+    r = job.get("result") or {}
+    leaked = [k for k in SECTIONS.values() if k != key and k in r]
+    good = key in r and not leaked
+    if not good:
+        fails.append(f"sections={name} returned {sorted(r)}")
+    print(f"  {'OK ' if good else 'BAD'} sections={name:<16} {key} present, leaked={leaked}")
+
+_, job, _ = run("patient_id=1133&wait=true&sections=summary,goals")
+r = job.get("result") or {}
+combo = "planSummary" in r and "behavioralHealthGoals" in r and "concerns" not in r
+if not combo:
+    fails.append("sections=summary,goals returned the wrong set")
+print(f"  {'OK ' if combo else 'BAD'} sections=summary,goals   both present, others absent")
+
+code, _ = call("POST", "/api/patient?patient_id=1133&wait=true&sections=nonsense")
+if code != 400:
+    fails.append(f"unknown section -> {code}, wanted 400")
+print(f"  {'OK ' if code == 400 else 'BAD'} sections=nonsense        {code} (want 400)")
+
+print("\n-- date parameter validation --")
+for q, want in (("start_date=2026-09-01&end_date=2026-09-30", 200),
+                ("start_date=2026-09-01T10:00:00Z", 200),
+                ("start_date=2026-09-01T10:00:00%2B05:30", 200),
+                ("start_date=2026-09-01%2010:00:00", 200),
+                ("start_date=2026/09/01", 400),
+                ("start_date=09-01-2026", 400),
+                ("start_date=2026-13-01", 400),
+                ("start_date=2026-12-01&end_date=2026-01-01", 400)):
+    code, _ = call("POST", f"/api/patient?patient_id=1133&wait=true&sections=summary&{q}")
+    if code != want:
+        fails.append(f"{q} -> {code}, wanted {want}")
+    print(f"  {'OK ' if code == want else 'BAD'} {q:<46} {code} (want {want})")
+
+print("\n-- async job flow --")
+code, body = call("POST", "/api/patient?patient_id=1136")
+job_id = body.get("jobId")
+deadline, status = time.time() + 180, None
+while time.time() < deadline:
+    _, j = call("GET", f"/api/jobs/{job_id}")
+    status = j.get("status")
+    if status in ("done", "failed"):
+        break
+    time.sleep(1)
+if status != "done":
+    fails.append(f"async job ended as {status}")
+print(f"  {'OK ' if status == 'done' else 'BAD'} POST without wait -> jobId, polled to {status}")
+
 print("\n-- 4 concurrent (no single-job lock any more) --")
 t0 = time.time()
 with ThreadPoolExecutor(4) as pool:
     out = list(pool.map(lambda i: call("POST", f"/api/patient?patient_id=113{i}&wait=true", 180),
                         (3, 4, 5, 6)))
-print(f"  statuses={[c for c, _ in out]}  wall={time.time()-t0:.1f}s")
+statuses = [c for c, _ in out]
+fails.append(f"concurrent statuses {statuses}") if any(c != 200 for c in statuses) else None
+print(f"  statuses={statuses}  wall={time.time()-t0:.1f}s")
+
+print()
+print("=" * 62)
+if fails:
+    print(f"  {len(fails)} FAILED")
+    for f in fails:
+        print(f"    {f}")
+else:
+    print("  all endpoint checks passed")
+print("=" * 62)
+sys.exit(1 if fails else 0)

@@ -65,7 +65,7 @@ PATIENT_OTHER_RECORD_TEXT = "registered in this provider group, but under a diff
 # where a failure means the service comes up with no session at all, and
 # 15s was not enough to find frMain on a loaded machine even though the
 # login itself had completed fine.
-SEARCH_TIMEOUT_MS = 45_000
+SEARCH_TIMEOUT_MS = 120_000
 
 
 class PatientNotFoundError(Exception):
