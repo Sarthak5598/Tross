@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+#
+# Runs the component tests before every push, and refuses the push if they
+# fail. When the change touches the browser-side code, it also insists on
+# the cold-login gate — the check whose absence caused two outages.
+#
+# Install once:
+#   git config core.hooksPath backend/scripts
+#
+# Skip deliberately (documentation-only changes, say):
+#   git push --no-verify
+#
+set -uo pipefail
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT/backend" || exit 0
+
+PY=./venv/Scripts/python.exe
+[ -x "$PY" ] || PY=./venv/bin/python
+[ -x "$PY" ] || PY=python3
+
+printf '\n\033[1m== Component tests\033[0m\n'
+if ! "$PY" tests/test_units.py; then
+  printf '\n\033[31mPush blocked: component tests failed.\033[0m\n'
+  exit 1
+fi
+
+# Files where a bug only shows up when a container starts with no session.
+# A warm process, a green unit run and a passing endpoint suite all say
+# nothing about these — that is exactly how both outages reached
+# production.
+BROWSER_PATHS='backend/automation/(login|browser_pool|api_session|token_source|patient_search|care_plan)\.py'
+
+RANGE="origin/main...HEAD"
+git rev-parse --verify origin/main >/dev/null 2>&1 || RANGE="HEAD~1...HEAD"
+TOUCHED=$(git diff --name-only "$RANGE" 2>/dev/null | grep -E "$BROWSER_PATHS" || true)
+
+if [ -z "$TOUCHED" ]; then
+  printf '\n\033[32mOK to push.\033[0m No browser-side files changed.\n\n'
+  exit 0
+fi
+
+printf '\n\033[1m== Cold-login gate\033[0m\n'
+printf 'These changed:\n'
+printf '  %s\n' $TOUCHED
+printf '\nThis code runs ONLY when a container starts with no session, so\n'
+printf 'nothing else you have run tests it. Forcing a real login (~40s,\n'
+printf 'uses one TOTP window).\n\n'
+
+if ! "$PY" tests/test_login.py; then
+  printf '\n\033[31mPush blocked: cold login failed.\033[0m\n'
+  printf 'This is the failure that would have hit the next restart.\n\n'
+  exit 1
+fi
+
+printf '\n\033[32mOK to push.\033[0m\n\n'
+exit 0

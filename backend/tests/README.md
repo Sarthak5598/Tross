@@ -8,31 +8,43 @@ Three layers, and the rule is which one you must run for which change.
 | **Cold login** | `python tests/test_login.py` | credentials, a free TOTP window | ~40s |
 | **End to end** | `python tests/test_e2e.py <base-url>` | a running instance | ~2min |
 
-## Before pushing
-
-Always: `python tests/test_units.py` — 97 checks, no network, no excuse.
-
-**Also run the cold-login gate if you touched any of:**
-`login.py`, `browser_pool.py`, `api_session.py`, `token_source.py`,
-`patient_search.py`, `care_plan.py`.
-
-This is not optional caution, it is the lesson from two outages. Both came
-from the login path, which runs *only when there is no session* — so a
-warm process, a green unit run and a passing e2e suite all say nothing
-about it. A container that has already logged in keeps working while the
-code that logs in is broken, and you find out at the next restart.
-
-The gate throws the session away and logs in for real. It is the only
-thing that would have caught either failure.
-
-## After deploying
+## Before pushing — automatic
 
 ```bash
-python tests/test_e2e.py http://52.91.250.2:8000
+git config core.hooksPath backend/scripts     # once per clone
 ```
 
-Give a fresh container ~40s first — it has to complete a real login before
-`hasToken` goes true.
+After that every `git push` runs the component tests, and **refuses the
+push if they fail**. If the change touches any of `login.py`,
+`browser_pool.py`, `api_session.py`, `token_source.py`,
+`patient_search.py` or `care_plan.py`, it also forces the cold-login gate.
+
+That list is not arbitrary: it is the code that runs *only when there is
+no session*. A warm process, a green unit run and a passing e2e suite all
+say nothing about it — a container that has already logged in keeps
+working while the code that logs in is broken, and you find out at the
+next restart. Both outages looked exactly like that.
+
+`git push --no-verify` skips it, for documentation-only changes.
+
+## Deploying — verified, with rollback
+
+On the server:
+
+```bash
+cd ~/Tross && bash backend/scripts/deploy.sh
+```
+
+It tags the running image as `:previous`, builds, starts the new one,
+**waits for a real login to complete**, runs the endpoint suite against
+it, and restores `:previous` if either fails.
+
+This is the part a local test cannot give you. A fresh container has no
+session, so reaching `hasToken: true` means login, MFA, department
+selection, the app shell and token acquisition all worked *on the machine
+that actually matters* — different CPU, different memory pressure,
+different network. The deploy has always been the real cold-login test.
+What was missing was anyone checking the result, and any way back.
 
 Token renewal is the one thing no suite covers, because it happens once
 every ~80 seconds. Watch it directly:
