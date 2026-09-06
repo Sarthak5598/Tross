@@ -112,9 +112,30 @@ class ApiSession:
         await open_care_management_pane(self._page, on_step)
 
     async def _attempt(self, on_step) -> tuple[str, str]:
+        """One acquisition attempt. Raises if it could only produce a token
+        we already hold.
+
+        The freshness check at the end is load-bearing. HeaderCapture's
+        refresh() deliberately returns the OLD headers when a reload times
+        out — losing a working token would be worse — but that means this
+        can otherwise hand back the very token it was asked to replace.
+
+        The renewal loop then stored it, _expires_at never moved,
+        needs_renewal stayed true, and it tried again 30s later, reloading
+        a heavy page each time until the app happened to emit a request of
+        its own. Observed as the token bottoming out at 3-10s remaining on
+        every cycle regardless of the margin — raising the margin just made
+        the loop start spinning sooner.
+
+        Raising here instead lets _acquire's second attempt throw the page
+        away and do a real re-login, which actually produces a new token.
+        """
         await self._ensure_logged_in(on_step)
         await self._provoke_graphql(on_step)
         headers = await self._capture.wait_for_headers()
+        if not self._captured_token_is_fresh():
+            raise RuntimeError(
+                "Acquisition produced no fresher token than the one held")
         return headers["authorization"], headers.get("x-athena-context", "")
 
     async def _acquire(self) -> tuple[str, str]:

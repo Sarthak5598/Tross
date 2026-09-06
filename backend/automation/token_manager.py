@@ -157,6 +157,13 @@ class TokenManager:
         """
         token, context = await self._acquire()
         expiry = decode_expiry(token)
+        # Never accept a "replacement" that expires no later than what we
+        # already hold. Storing it would leave needs_renewal true forever
+        # and turn this loop into a page-reload spinner.
+        if expiry and expiry <= self._expires_at:
+            raise RuntimeError(
+                f"Acquired token is not newer "
+                f"({expiry - self._expires_at:.0f}s difference)")
         async with self._lock:
             self._token = token
             self._context = context
