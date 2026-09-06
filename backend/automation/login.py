@@ -39,7 +39,14 @@ DEPARTMENT_SUBMIT_SELECTOR = "#loginbutton"
 GLOBAL_NAV_FRAME_SELECTOR = "iframe#GlobalNav"
 SEARCH_INPUT_SELECTOR = "#searchinput"
 
-LOGIN_TIMEOUT_MS = 15_000
+# Login runs once per container lifetime and a failure here takes the
+# whole service down until the next attempt, so every wait in this file is
+# deliberately generous. 15s was too tight: a real cold login measured
+# 71-77s end to end, and the app-shell wait after department selection
+# timed out at 15s on a loaded machine while the login itself was fine.
+#
+# Nothing is gained by failing fast on a path that runs once an hour.
+LOGIN_TIMEOUT_MS = 60_000
 
 
 async def _wait_for_app_shell(page, on_step) -> None:
@@ -102,13 +109,22 @@ async def login(page, username: str, password: str, totp_secret: str, on_step) -
     # the password. On a small instance that transition can take well over
     # the default timeout, which is what a real failure looked like.
     await page.wait_for_selector(PASSWORD_SELECTOR, timeout=LOGIN_TIMEOUT_MS)
-    await page.wait_for_function(
-        """() => {
-            const el = document.querySelector('#athena-password');
-            return el && !el.disabled && el.value === '';
-        }""",
-        timeout=MFA_READY_TIMEOUT_MS,
-    )
+    try:
+        await page.wait_for_function(
+            """() => {
+                const el = document.querySelector('#athena-password');
+                return el && !el.disabled;
+            }""",
+            timeout=MFA_READY_TIMEOUT_MS,
+        )
+    except Exception:
+        # Proceed anyway: fill() does its own waiting, so a slow transition
+        # is survivable. Only the DISABLED state needed waiting out — an
+        # earlier version of this also required the field to be empty,
+        # which it never is (the MFA step reuses the input and leaves the
+        # password in it), so the wait always timed out and took every
+        # login down with it.
+        await on_step("MFA field still disabled after wait; trying anyway")
     await on_step("MFA step loaded")
 
     # Generated AFTER the wait, never before. Codes are valid for a single
