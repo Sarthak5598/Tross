@@ -19,7 +19,51 @@ from automation.api_session import session
 
 FAILED = []
 
+async def http_login_gate():
+    """The browserless path, which is now primary.
+
+    Cheap enough (~15s, no browser) that there is no excuse for skipping
+    it, and it exercises the exact thing that broke twice: RE-login on an
+    object that already has a session.
+    """
+    import config
+    from automation.http_login import AthenaHttpSession
+
+    print("  -- browserless login (primary path)")
+    session = AthenaHttpSession(
+        login_url=config.ATHENA_LOGIN_URL, username=config.ATHENA_USERNAME,
+        password=config.ATHENA_PASSWORD, totp_secret=config.ATHENA_TOTP_SECRET,
+        environment=config.ATHENA_ENVIRONMENT, practice=config.ATHENA_PRACTICE,
+        department=config.ATHENA_DEPARTMENT)
+
+    info = await asyncio.get_running_loop().run_in_executor(None, session.login)
+    print(f"     login {info['seconds']}s  idle budget {info['sessionTimeout']}s")
+
+    token, ttl = await asyncio.get_running_loop().run_in_executor(None, session.mint_token)
+    if not token or ttl <= 0:
+        FAILED.append("http login minted no usable token")
+    print(f"     token ttl={ttl}s")
+
+    # the failure mode that caused both outages
+    again = await asyncio.get_running_loop().run_in_executor(None, session.login)
+    print(f"     re-login {again['seconds']}s")
+    token2, ttl2 = await asyncio.get_running_loop().run_in_executor(None, session.mint_token)
+    if not token2:
+        FAILED.append("http re-login produced no token")
+    if token2 == token:
+        FAILED.append("re-login returned the same token")
+    print(f"     token after re-login ttl={ttl2}s, different={token2 != token}")
+
+    headers = session.api_headers(token2)
+    missing = {"authorization", "x-athena-context", "x-athena-environment"} - set(headers)
+    if missing:
+        FAILED.append(f"api_headers missing {sorted(missing)}")
+    print(f"     headers: {sorted(headers)}")
+
+
 async def main():
+    await http_login_gate()
+    print(chr(10) + "  -- browser login (fallback path)")
     steps = []
     async def on_step(message):
         steps.append(f"{time.time() - t0:6.1f}s  {message}")

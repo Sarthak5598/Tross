@@ -32,10 +32,16 @@ from automation.patient_search import search_patient
 from automation.care_plan import open_care_management_pane
 from automation.token_manager import TokenManager, decode_expiry
 from automation.token_source import HeaderCapture, mint_token
+from automation.http_login import AthenaHttpSession, LoginFailed
 
 # Don't reuse a token with less than this left — a request that starts
 # near expiry could outlive it mid-flight.
 MIN_TOKEN_LIFE_S = 60
+
+# Re-login when the session has less than this much idle budget left.
+# athenahealth reports 1800s; five minutes of headroom is generous against
+# a login that takes ~15s.
+SESSION_RENEW_MARGIN_S = 300
 
 # Opening any patient's Care Management pane makes the app issue the
 # GraphQL calls we harvest headers from. The patient is incidental — we
@@ -53,6 +59,9 @@ class ApiSession:
         self._lock = asyncio.Lock()
         self._tokens = TokenManager(self._acquire)
         self._last_error: str | None = None
+        # Browserless session. Primary when config.USE_HTTP_LOGIN is on.
+        self._http: AthenaHttpSession | None = None
+        self._http_headers: dict | None = None
 
     # -- browser side ---------------------------------------------------
 
@@ -128,6 +137,64 @@ class ApiSession:
         await search_patient(self._page, self._warmup_patient_id, on_step)
         await open_care_management_pane(self._page, on_step)
 
+    # -- browserless path -----------------------------------------------
+
+    def _http_session(self) -> AthenaHttpSession:
+        if self._http is None:
+            self._http = AthenaHttpSession(
+                login_url=config.ATHENA_LOGIN_URL,
+                username=config.ATHENA_USERNAME,
+                password=config.ATHENA_PASSWORD,
+                totp_secret=config.ATHENA_TOTP_SECRET,
+                environment=config.ATHENA_ENVIRONMENT,
+                practice=config.ATHENA_PRACTICE,
+                department=config.ATHENA_DEPARTMENT,
+            )
+        return self._http
+
+    async def _acquire_http(self, on_step) -> tuple[str, str] | None:
+        """Log in and mint a token over plain HTTP. No browser involved.
+
+        Returns None if it cannot be used, so the caller falls back to the
+        browser rather than losing the service to an approach that is still
+        young. Everything here is blocking urllib, so it runs off the event
+        loop.
+
+        Re-login is the point. On the browser path that meant driving a
+        form whose shape changes when a session goes stale, and it is what
+        took production down twice. Here it is the same two API calls as
+        the first login, every time.
+        """
+        if not config.USE_HTTP_LOGIN:
+            return None
+
+        loop = asyncio.get_running_loop()
+        session = self._http_session()
+
+        def work():
+            # A session with idle budget left can just mint. Otherwise log
+            # in first — athenahealth publishes the idle timeout, so this
+            # is a real check rather than a guess.
+            if session.seconds_until_session_expiry < SESSION_RENEW_MARGIN_S:
+                session.login()
+                return session.mint_token(), True
+            try:
+                return session.mint_token(), False
+            except LoginFailed:
+                session.login()          # session died early; start over
+                return session.mint_token(), True
+
+        try:
+            (token, ttl), logged_in = await loop.run_in_executor(None, work)
+        except Exception as exc:
+            await on_step(f"HTTP login unavailable, falling back to browser: {exc}")
+            return None
+
+        await on_step(f"Minted a token over HTTP ({ttl}s)"
+                      + (" after a fresh login" if logged_in else ""))
+        self._http_headers = session.api_headers(token)
+        return f"Bearer {token}", config.ATHENA_PRACTICE
+
     async def _mint(self, on_step) -> tuple[str, str] | None:
         """Fast path: ask the app's own token endpoint for a fresh JWT.
 
@@ -173,6 +240,11 @@ class ApiSession:
         Raising here instead lets _acquire's second attempt throw the page
         away and do a real re-login, which actually produces a new token.
         """
+        # Browserless first. It is faster and has no page to go wrong.
+        over_http = await self._acquire_http(on_step)
+        if over_http:
+            return over_http
+
         await self._ensure_logged_in(on_step)
 
         minted = await self._mint(on_step)
@@ -239,9 +311,11 @@ class ApiSession:
         # current(), not get(): a request must never trigger a login. See
         # TokenManager.current().
         token, _ = self._tokens.current()
-        headers = dict(self._capture.headers or {})
+        # Headers come from whichever path produced the token.
+        headers = dict(getattr(self, "_http_headers", None)
+                       or (self._capture.headers if self._capture else None) or {})
         if not headers:
-            raise RuntimeError("No API headers captured yet")
+            raise RuntimeError("No API headers available yet")
         # The non-auth headers come from the capture (they never change);
         # the token comes from TokenManager, which is the only thing that
         # knows whether it is current.
@@ -276,7 +350,10 @@ class ApiSession:
         headers = self._capture.headers if self._capture else None
         return {
             **token_status,
-            "hasHeaders": bool(headers),
+            "loginMode": "http" if self._http_headers else "browser",
+            "sessionIdleSecondsLeft": (
+                round(self._http.seconds_until_session_expiry) if self._http else None),
+            "hasHeaders": bool(headers or self._http_headers),
             "context": (headers or {}).get("x-athena-context"),
             "environment": (headers or {}).get("x-athena-environment"),
             "sessionError": self._last_error,

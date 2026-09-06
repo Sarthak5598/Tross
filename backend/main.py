@@ -29,9 +29,13 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def _startup() -> None:
-    # Keep one Chromium instance warm across requests — cold-launching one
-    # per job was costing ~12-15s every single call.
-    await browser_pool.start()
+    # Only launch Chromium when we might actually need it. With the HTTP
+    # login there is nothing for a browser to do, and not starting one
+    # saves several hundred MB on a 1GB instance. browser_pool starts
+    # lazily if the fallback is ever used.
+    import config
+    if not config.USE_HTTP_LOGIN:
+        await browser_pool.start()
     # Log in and capture API credentials at boot, then keep the token
     # renewed in the background, so no request ever waits ~30s for MFA.
     from automation.api_session import session
